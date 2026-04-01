@@ -1,5 +1,7 @@
 import csv
+import random
 import re
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +42,10 @@ AI_ML_PATTERN = re.compile(
 
 USE_PROXIES = False
 PROXY_FILE = Path(__file__).resolve().parent.parent / "proxies.txt"
+PLAYWRIGHT_HEADLESS = False
+PLAYWRIGHT_PAUSE_ON_LOGIN = True
+PLAYWRIGHT_PAUSE_ON_CAPTCHA = True
+QUERY_DELAY_RANGE_SECONDS = (6, 12)
 
 
 def load_proxies() -> list[str] | None:
@@ -88,13 +94,14 @@ def collect_jobs() -> pd.DataFrame:
             proxies=proxies,
             verbose=1,
             use_playwright_fallback=True,
-            playwright_headless=False,
-            playwright_pause_on_login=True,
+            playwright_headless=PLAYWRIGHT_HEADLESS,
+            playwright_pause_on_login=PLAYWRIGHT_PAUSE_ON_LOGIN,
+            playwright_pause_on_captcha=PLAYWRIGHT_PAUSE_ON_CAPTCHA,
         )
-        if jobs.empty:
-            continue
-        jobs["search_term_used"] = search_term
-        all_jobs.append(jobs)
+        if not jobs.empty:
+            jobs["search_term_used"] = search_term
+            all_jobs.append(jobs)
+        time.sleep(random.uniform(*QUERY_DELAY_RANGE_SECONDS))
 
     if not all_jobs:
         return pd.DataFrame()

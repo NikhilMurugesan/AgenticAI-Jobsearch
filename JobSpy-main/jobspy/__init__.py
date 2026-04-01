@@ -52,6 +52,7 @@ def scrape_jobs(
     use_playwright_fallback: bool = False,
     playwright_headless: bool = True,
     playwright_pause_on_login: bool = False,
+    playwright_pause_on_captcha: bool = False,
     **kwargs,
 ) -> pd.DataFrame:
     """
@@ -141,6 +142,7 @@ def scrape_jobs(
                         results_wanted=results_wanted,
                         headless=playwright_headless,
                         pause_on_login=playwright_pause_on_login,
+                        pause_on_captcha=playwright_pause_on_captcha,
                     )
                 )
             except Exception as exc:

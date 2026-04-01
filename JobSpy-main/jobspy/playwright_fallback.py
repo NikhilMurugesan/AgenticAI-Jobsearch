@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from bs4 import BeautifulSoup
 
 from jobspy.model import JobPost, Location
+from jobspy.util import create_logger
 
 SITE_SEARCH_DOMAINS = {
     "linkedin": "linkedin.com/jobs/view",
@@ -105,6 +106,8 @@ DEFAULT_USER_AGENT = (
     "Chrome/135.0.0.0 Safari/537.36"
 )
 
+log = create_logger("PlaywrightFallback")
+
 
 def get_jobs_with_playwright(
     search_term: str,
@@ -113,6 +116,7 @@ def get_jobs_with_playwright(
     results_wanted: int = 15,
     headless: bool = True,
     pause_on_login: bool = False,
+    pause_on_captcha: bool = False,
 ) -> list[JobPost]:
     try:
         return asyncio.run(
@@ -123,6 +127,7 @@ def get_jobs_with_playwright(
                 results_wanted=results_wanted,
                 headless=headless,
                 pause_on_login=pause_on_login,
+                pause_on_captcha=pause_on_captcha,
             )
         )
     except RuntimeError:
@@ -136,6 +141,7 @@ def get_jobs_with_playwright(
                     results_wanted=results_wanted,
                     headless=headless,
                     pause_on_login=pause_on_login,
+                    pause_on_captcha=pause_on_captcha,
                 )
             )
         finally:
@@ -149,6 +155,7 @@ async def _get_jobs_with_playwright(
     results_wanted: int,
     headless: bool,
     pause_on_login: bool,
+    pause_on_captcha: bool,
 ) -> list[JobPost]:
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -174,6 +181,11 @@ async def _get_jobs_with_playwright(
         await page.goto("https://www.google.com/ncr", wait_until="domcontentloaded")
         await _human_pause()
         await _accept_google_consent(page)
+        await _handle_google_captcha(
+            page=page,
+            pause_on_captcha=pause_on_captcha,
+            headless=headless,
+        )
 
         search_box = page.locator("textarea[name='q'], input[name='q']").first
         await search_box.wait_for(timeout=15000)
@@ -183,10 +195,16 @@ async def _get_jobs_with_playwright(
         await _human_pause(0.4, 0.9)
         await search_box.press("Enter")
         await page.wait_for_load_state("domcontentloaded")
+        await _human_pause(1.2, 2.6)
+        await _handle_google_captcha(
+            page=page,
+            pause_on_captcha=pause_on_captcha,
+            headless=headless,
+        )
 
         for _ in range(4):
             await page.mouse.wheel(0, random.randint(1200, 2400))
-            await _human_pause(0.5, 1.1)
+            await _human_pause(0.9, 1.8)
 
         links = await _extract_search_results(
             page=page,
@@ -202,7 +220,7 @@ async def _get_jobs_with_playwright(
                     wait_until="domcontentloaded",
                     timeout=30000,
                 )
-                await _human_pause(0.8, 1.6)
+                await _human_pause(1.2, 2.3)
 
                 if pause_on_login and site_name == "linkedin" and "login" in detail_page.url.lower():
                     await detail_page.pause()
@@ -267,6 +285,25 @@ async def _accept_google_consent(page) -> None:
             continue
 
 
+async def _handle_google_captcha(page, pause_on_captcha: bool, headless: bool) -> None:
+    if not await _is_google_captcha_page(page):
+        return
+
+    log.warning("Google served a captcha or block page")
+    if pause_on_captcha and not headless:
+        log.warning("Pausing browser for manual captcha completion")
+        await page.pause()
+        await page.wait_for_load_state("domcontentloaded")
+        if await _is_google_captcha_page(page):
+            raise RuntimeError("Captcha page is still active after manual pause")
+        return
+
+    raise RuntimeError(
+        "Google captcha detected. Re-run with `playwright_headless=False` "
+        "and `playwright_pause_on_captcha=True` for manual solving."
+    )
+
+
 async def _extract_search_results(page, site_name: str, results_limit: int) -> list[tuple[str, str]]:
     anchors = page.locator("a:has(h3)")
     anchor_count = min(await anchors.count(), results_limit * 2)
@@ -291,6 +328,22 @@ async def _extract_search_results(page, site_name: str, results_limit: int) -> l
             break
 
     return results
+
+
+async def _is_google_captcha_page(page) -> bool:
+    url = page.url.lower()
+    title = (await page.title()).lower()
+    content = (await page.content()).lower()
+    markers = [
+        "sorry/index",
+        "our systems have detected unusual traffic",
+        "recaptcha",
+        "/sorry/",
+        "detected unusual traffic",
+        "not a robot",
+    ]
+    haystacks = [url, title, content]
+    return any(marker in haystack for marker in markers for haystack in haystacks)
 
 
 def _normalize_google_result_url(href: str | None) -> str | None:
