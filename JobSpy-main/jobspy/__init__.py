@@ -49,6 +49,9 @@ def scrape_jobs(
     enforce_annual_salary: bool = False,
     verbose: int = 0,
     user_agent: str = None,
+    use_playwright_fallback: bool = False,
+    playwright_headless: bool = True,
+    playwright_pause_on_login: bool = False,
     **kwargs,
 ) -> pd.DataFrame:
     """
@@ -104,11 +107,46 @@ def scrape_jobs(
     def scrape_site(site: Site) -> Tuple[str, JobResponse]:
         scraper_class = SCRAPER_MAPPING[site]
         scraper = scraper_class(proxies=proxies, ca_cert=ca_cert, user_agent=user_agent)
-        scraped_data: JobResponse = scraper.scrape(scraper_input)
         cap_name = site.value.capitalize()
-        site_name = "ZipRecruiter" if cap_name == "Zip_recruiter" else cap_name
-        site_name = "LinkedIn" if cap_name == "Linkedin" else cap_name
-        create_logger(site_name).info(f"finished scraping")
+        site_label = "ZipRecruiter" if cap_name == "Zip_recruiter" else cap_name
+        site_label = "LinkedIn" if cap_name == "Linkedin" else site_label
+
+        try:
+            scraped_data: JobResponse = scraper.scrape(scraper_input)
+        except Exception as exc:
+            create_logger(site_label).error(f"primary scraper failed: {exc}")
+            scraped_data = JobResponse(jobs=[])
+
+        playwright_supported_sites = {
+            Site.LINKEDIN,
+            Site.INDEED,
+            Site.NAUKRI,
+            Site.GLASSDOOR,
+        }
+        if (
+            use_playwright_fallback
+            and not scraped_data.jobs
+            and site in playwright_supported_sites
+            and search_term
+        ):
+            try:
+                from jobspy.playwright_fallback import get_jobs_with_playwright
+
+                create_logger(site_label).info("falling back to Playwright")
+                scraped_data = JobResponse(
+                    jobs=get_jobs_with_playwright(
+                        search_term=search_term,
+                        location=location or "",
+                        site_name=site.value,
+                        results_wanted=results_wanted,
+                        headless=playwright_headless,
+                        pause_on_login=playwright_pause_on_login,
+                    )
+                )
+            except Exception as exc:
+                create_logger(site_label).error(f"Playwright fallback failed: {exc}")
+
+        create_logger(site_label).info(f"finished scraping")
         return site.value, scraped_data
 
     site_to_jobs_dict = {}

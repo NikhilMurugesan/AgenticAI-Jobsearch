@@ -71,7 +71,6 @@ def matches_ai_ml_role(row: pd.Series) -> bool:
 def collect_jobs() -> pd.DataFrame:
     all_jobs: list[pd.DataFrame] = []
     proxies = load_proxies()
-
     for search_term in SEARCH_TERMS:
         print(f"Searching for: {search_term}")
         jobs = scrape_jobs(
@@ -88,6 +87,9 @@ def collect_jobs() -> pd.DataFrame:
             linkedin_fetch_description=True,
             proxies=proxies,
             verbose=1,
+            use_playwright_fallback=True,
+            playwright_headless=False,
+            playwright_pause_on_login=True,
         )
         if jobs.empty:
             continue
