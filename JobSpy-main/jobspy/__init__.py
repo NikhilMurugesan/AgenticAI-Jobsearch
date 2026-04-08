@@ -53,6 +53,7 @@ def scrape_jobs(
     playwright_headless: bool = True,
     playwright_pause_on_login: bool = False,
     playwright_pause_on_captcha: bool = False,
+    sequential_sites: bool = False,
     **kwargs,
 ) -> pd.DataFrame:
     """
@@ -157,23 +158,36 @@ def scrape_jobs(
         site_val, scraped_info = scrape_site(site)
         return site_val, scraped_info
 
-    with ThreadPoolExecutor() as executor:
-        future_to_site = {
-            executor.submit(worker, site): site for site in scraper_input.site_type
-        }
-
-        for future in as_completed(future_to_site):
-            site = future_to_site[future]
+    if sequential_sites:
+        for site in scraper_input.site_type:
             site_label = "LinkedIn" if site == Site.LINKEDIN else (
                 "ZipRecruiter" if site == Site.ZIP_RECRUITER else site.value.capitalize()
             )
             try:
-                site_value, scraped_data = future.result()
+                site_value, scraped_data = worker(site)
                 site_to_jobs_dict[site_value] = scraped_data
             except Exception as exc:
                 create_logger(site_label).error(
                     f"skipping site after scraper failure: {exc}"
                 )
+    else:
+        with ThreadPoolExecutor() as executor:
+            future_to_site = {
+                executor.submit(worker, site): site for site in scraper_input.site_type
+            }
+
+            for future in as_completed(future_to_site):
+                site = future_to_site[future]
+                site_label = "LinkedIn" if site == Site.LINKEDIN else (
+                    "ZipRecruiter" if site == Site.ZIP_RECRUITER else site.value.capitalize()
+                )
+                try:
+                    site_value, scraped_data = future.result()
+                    site_to_jobs_dict[site_value] = scraped_data
+                except Exception as exc:
+                    create_logger(site_label).error(
+                        f"skipping site after scraper failure: {exc}"
+                    )
 
     jobs_dfs: list[pd.DataFrame] = []
 

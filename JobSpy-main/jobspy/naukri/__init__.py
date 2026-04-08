@@ -8,6 +8,7 @@ from typing import Optional
 
 import regex as re
 import requests
+from DrissionPage import ChromiumPage
 
 from jobspy.exception import NaukriException
 from jobspy.naukri.constant import headers as naukri_headers
@@ -34,6 +35,14 @@ from jobspy.util import (
     create_session,
     create_logger,
 )
+import sys
+from pathlib import Path
+
+# Add the directory containing RecaptchaSolver to the Python path
+sys.path.append(str(Path(__file__).parent.parent.parent / "GoogleRecaptchaBypass-main"))
+
+from RecaptchaSolver import RecaptchaSolver
+
 
 log = create_logger("Naukri")
 
@@ -41,7 +50,7 @@ class Naukri(Scraper):
     base_url = "https://www.naukri.com/jobapi/v3/search"
     delay = 3
     band_delay = 4
-    jobs_per_page = 20  
+    jobs_per_page = 20
 
     def __init__(
         self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
@@ -50,104 +59,115 @@ class Naukri(Scraper):
         Initializes NaukriScraper with the Naukri API URL
         """
         super().__init__(Site.NAUKRI, proxies=proxies, ca_cert=ca_cert)
+        self.driver = ChromiumPage()
+        self.recaptcha_solver = RecaptchaSolver(self.driver)
+
+        self.scraper_input = None
+        self.country = "India"  #naukri is india-focused by default
+        log.info("Naukri scraper initialized")
+        log.info("Please ensure that DrissionPage, pydub, SpeechRecognition, and ffmpeg are installed for reCAPTCHA support.")
+
+    def scrape(self, scraper_input: ScraperInput) -> JobResponse:
+        """
+        Scrapes Naukri for jobs by navigating to the search page, solving CAPTCHA if necessary,
+        and then using the session to fetch job listings from the API.
+        """
+        self.scraper_input = scraper_input
+        self.driver.get(f"https://www.naukri.com/{scraper_input.search_term.lower().replace(' ', '-')}-jobs")
+        
+        try:
+            self.recaptcha_solver.solveCaptcha()
+            log.info("CAPTCHA solved successfully.")
+        except Exception as e:
+            log.error(f"CAPTCHA challenge failed: {e}")
+
+        cookies = {cookie['name']: cookie['value'] for cookie in self.driver.get_cookies()}
         self.session = create_session(
             proxies=self.proxies,
-            ca_cert=ca_cert,
-            is_tls=False,
+            ca_cert=self.ca_cert,
             has_retry=True,
             delay=5,
             clear_cookies=True,
         )
+        self.session.cookies.update(cookies)
         self.session.headers.update(naukri_headers)
-        self.scraper_input = None
-        self.country = "India"  #naukri is india-focused by default
-        log.info("Naukri scraper initialized")
 
-    def scrape(self, scraper_input: ScraperInput) -> JobResponse:
+        return self._fetch_job_posts(scraper_input)
+
+    def _fetch_job_posts(self, scraper_input: ScraperInput) -> JobResponse:
         """
-        Scrapes Naukri API for jobs with scraper_input criteria
-        :param scraper_input:
-        :return: job_response
+        Fetches job posts from Naukri's API after the browser session is authenticated.
         """
-        self.scraper_input = scraper_input
         job_list: list[JobPost] = []
         seen_ids = set()
         start = scraper_input.offset or 0
         page = (start // self.jobs_per_page) + 1
         request_count = 0
-        seconds_old = (
-            scraper_input.hours_old * 3600 if scraper_input.hours_old else None
-        )
+        seconds_old = scraper_input.hours_old * 3600 if scraper_input.hours_old else None
+        
         continue_search = (
-            lambda: len(job_list) < scraper_input.results_wanted and page <= 50  # Arbitrary limit
+            lambda: len(job_list) < scraper_input.results_wanted and page <= 50
         )
 
         while continue_search():
             request_count += 1
-            log.info(
-                f"Scraping page {request_count} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)} "
-                f"for search term: {scraper_input.search_term}"
-            )
-            params = {
-                "noOfResults": self.jobs_per_page,
-                "urlType": "search_by_keyword",
-                "searchType": "adv",
-                "keyword": scraper_input.search_term,
-                "pageNo": page,
-                "k": scraper_input.search_term,
-                "seoKey": f"{scraper_input.search_term.lower().replace(' ', '-')}-jobs",
-                "src": "jobsearchDesk",
-                "latLong": "",
-                "location": scraper_input.location,
-                "remote": "true" if scraper_input.is_remote else None,
-            }
-            if seconds_old:
-                params["days"] = seconds_old // 86400  # Convert to days
-
-            params = {k: v for k, v in params.items() if v is not None}
+            log.info(f"Scraping page {request_count} for search term: {scraper_input.search_term}")
+            
+            params = self._build_api_params(scraper_input, page, seconds_old)
+            
             try:
-                log.debug(f"Sending request to {self.base_url} with params: {params}")
                 response = self.session.get(self.base_url, params=params, timeout=10)
-                if response.status_code not in range(200, 400):
-                    err = f"Naukri API response status code {response.status_code} - {response.text}"
-                    log.error(err)
-                    return JobResponse(jobs=job_list)
+                if response.status_code != 200:
+                    log.error(f"Naukri API request failed with status {response.status_code}: {response.text}")
+                    break
+                
                 data = response.json()
                 job_details = data.get("jobDetails", [])
-                log.info(f"Received {len(job_details)} job entries from API")
                 if not job_details:
-                    log.warning("No job details found in API response")
+                    log.info("No more job details found.")
                     break
-            except Exception as e:
-                log.error(f"Naukri API request failed: {str(e)}")
-                return JobResponse(jobs=job_list)
 
-            for job in job_details:
-                job_id = job.get("jobId")
-                if not job_id or job_id in seen_ids:
-                    continue
-                seen_ids.add(job_id)
-                log.debug(f"Processing job ID: {job_id}")
+                for job in job_details:
+                    job_id = job.get("jobId")
+                    if job_id and job_id not in seen_ids:
+                        seen_ids.add(job_id)
+                        job_post = self._process_job(job, job_id, scraper_input.linkedin_fetch_description)
+                        if job_post:
+                            job_list.append(job_post)
+                            if len(job_list) >= scraper_input.results_wanted:
+                                break
+                
+                if len(job_list) >= scraper_input.results_wanted:
+                    break
 
-                try:
-                    fetch_desc = scraper_input.linkedin_fetch_description
-                    job_post = self._process_job(job, job_id, fetch_desc)
-                    if job_post:
-                        job_list.append(job_post)
-                        log.info(f"Added job: {job_post.title} (ID: {job_id})")
-                    if not continue_search():
-                        break
-                except Exception as e:
-                    log.error(f"Error processing job ID {job_id}: {str(e)}")
-                    raise NaukriException(str(e))
+            except requests.exceptions.RequestException as e:
+                log.error(f"An error occurred during API request: {e}")
+                break
 
-            if continue_search():
-                time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
-                page += 1
+            time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
+            page += 1
 
-        job_list = job_list[:scraper_input.results_wanted]
-        log.info(f"Scraping completed. Total jobs collected: {len(job_list)}")
-        return JobResponse(jobs=job_list)
+        return JobResponse(jobs=job_list[:scraper_input.results_wanted])
+
+    def _build_api_params(self, scraper_input: ScraperInput, page: int, seconds_old: Optional[int]) -> dict:
+        """Builds the parameter dictionary for the Naukri API request."""
+        params = {
+            "noOfResults": self.jobs_per_page,
+            "urlType": "search_by_keyword",
+            "searchType": "adv",
+            "keyword": scraper_input.search_term,
+            "pageNo": page,
+            "k": scraper_input.search_term,
+            "seoKey": f"{scraper_input.search_term.lower().replace(' ', '-')}-jobs",
+            "src": "jobsearchDesk",
+            "latLong": "",
+            "location": scraper_input.location,
+            "remote": "true" if scraper_input.is_remote else None,
+        }
+        if seconds_old:
+            params["freshness"] = seconds_old // 86400
+
+        return {k: v for k, v in params.items() if v is not None}
 
     def _process_job(
         self, job: dict, job_id: str, full_descr: bool

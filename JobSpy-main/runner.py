@@ -23,7 +23,6 @@ TARGET_SITES = [
     "indeed",
     "linkedin",
     "google",
-    "glassdoor",
     "naukri",
 ]
 
@@ -97,6 +96,7 @@ def collect_jobs() -> pd.DataFrame:
             playwright_headless=PLAYWRIGHT_HEADLESS,
             playwright_pause_on_login=PLAYWRIGHT_PAUSE_ON_LOGIN,
             playwright_pause_on_captcha=PLAYWRIGHT_PAUSE_ON_CAPTCHA,
+            sequential_sites=True,
         )
         if not jobs.empty:
             jobs["search_term_used"] = search_term

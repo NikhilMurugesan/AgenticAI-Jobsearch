@@ -213,24 +213,23 @@ async def _get_jobs_with_playwright(
         )
 
         for title_hint, job_url in links[:results_wanted]:
-            detail_page = await context.new_page()
             try:
-                await detail_page.goto(
+                await page.goto(
                     job_url,
                     wait_until="domcontentloaded",
                     timeout=30000,
                 )
                 await _human_pause(1.2, 2.3)
 
-                if pause_on_login and site_name == "linkedin" and "login" in detail_page.url.lower():
-                    await detail_page.pause()
+                if pause_on_login and site_name == "linkedin" and "login" in page.url.lower():
+                    await page.pause()
 
-                await _soft_scroll(detail_page)
-                html = await detail_page.content()
+                await _soft_scroll(page)
+                html = await page.content()
                 jobs.append(
                     _build_job_post(
                         html=html,
-                        url=detail_page.url,
+                        url=page.url,
                         site_name=site_name,
                         location_hint=location,
                         title_hint=title_hint,
@@ -240,8 +239,6 @@ async def _get_jobs_with_playwright(
                 continue
             except Exception:
                 continue
-            finally:
-                await detail_page.close()
 
         await context.close()
         await browser.close()
